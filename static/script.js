@@ -196,8 +196,16 @@ document.addEventListener('DOMContentLoaded', function() {
                 throw new Error(data.message || data.error || 'Something went wrong');
             }
 
-            // Show results
-            showResults(data);
+            // If server accepted the job (202), poll the status endpoint
+            if (response.status === 202 && data && data.status === 'accepted' && data.status_url) {
+                const statusUrl = data.status_url;
+                // Show thinking block while polling
+                thinkingBlock.classList.remove('hidden');
+                await pollJobStatus(statusUrl);
+            } else {
+                // Show results immediately
+                showResults(data);
+            }
 
         } catch (error) {
             console.error('Error:', error);
@@ -305,6 +313,42 @@ document.addEventListener('DOMContentLoaded', function() {
         setTimeout(() => {
             resultsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }, 100);
+    }
+
+    // Poll job status endpoint until ready or error
+    async function pollJobStatus(statusUrl, interval = 2000, timeout = 120000) {
+        const start = Date.now();
+        while (Date.now() - start < timeout) {
+            try {
+                const resp = await fetch(statusUrl);
+                const data = await resp.json();
+                console.log('Job status:', data);
+                if (data.status === 'pending') {
+                    // wait and poll again
+                    await new Promise(res => setTimeout(res, interval));
+                    continue;
+                }
+
+                if (data.status === 'success' && data.result) {
+                    // Hide thinking and show results
+                    thinkingBlock.classList.add('hidden');
+                    showResults(data);
+                    return;
+                }
+
+                if (data.status === 'error') {
+                    thinkingBlock.classList.add('hidden');
+                    showError(data.message || 'Job failed');
+                    return;
+                }
+            } catch (err) {
+                console.error('Error polling job status:', err);
+                await new Promise(res => setTimeout(res, interval));
+            }
+        }
+
+        thinkingBlock.classList.add('hidden');
+        showError('Job timed out. Please try again.');
     }
 
     // Format the results for display

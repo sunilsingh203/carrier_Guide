@@ -1,10 +1,14 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, url_for
 import json
 import os
 from datetime import datetime
 from crewai import Task, Crew, Process, Agent
 from dotenv import load_dotenv
 import google.generativeai as genai
+import uuid
+import tempfile
+from multiprocessing import Process as MPProcess
+from pathlib import Path
 
 # Load environment variables
 load_dotenv()
@@ -64,108 +68,86 @@ def initialize_agents():
         print(f"Error initializing agents: {str(e)}")
         raise
 
-@recommend_bp.route('/recommend', methods=['POST'])
-def get_career_recommendations():
-    try:
-        # Initialize agents
-        profile_analyzer, career_matcher, roadmap_creator = initialize_agents()
-        
-        data = request.get_json()
-        
-        # Basic validation
-        if not data:
-            return jsonify({'error': 'No input data provided'}), 400
 
-        # Create tasks
+def _run_crew_and_write_output(form_data, out_path):
+    """
+    Worker function to run the crew.kickoff and write normalized JSON output to out_path.
+    This runs in a separate process to avoid blocking the web worker.
+    """
+    try:
+        # Re-create agents and tasks inside the child process
+        profile_analyzer, career_matcher, roadmap_creator = initialize_agents()
+
         profile_analysis_task = Task(
-            description=f"""Analyze the following user profile and extract key insights:
-            Skills: {data.get('skills', 'Not specified')}
-            Interests: {data.get('interests', 'Not specified')}
-            Strengths: {data.get('strengths', 'Not specified')}
-            Personality Traits: {data.get('personality_traits', 'Not specified')}
-            Work Style: {data.get('work_style', 'Not specified')}
-            Education: {data.get('education', 'Not specified')}
-            Salary Expectations: {data.get('salary_expectations', 'Not specified')}
-            Tech Preference: {data.get('tech_preference', 'Not specified')}
-            Learning Ability: {data.get('learning_ability', 'Not specified')}
-            Past Projects: {data.get('past_projects', 'No past projects specified')}
-            
-            Provide a detailed analysis of the user's profile.
-            """,
+            description=f"Analyze profile: {form_data}",
             agent=profile_analyzer,
-            expected_output="A comprehensive analysis of the user's profile."
+            expected_output="JSON summary of profile",
         )
-        
+
         career_matching_task = Task(
-            description="""Based on the profile analysis, recommend the top 5 most suitable 
-            career paths. For each career, provide:
-            1. Career title
-            2. Brief description
-            3. Why it's a good fit
-            4. Expected salary range
-            5. Job market outlook
-            
-            Format the output as a JSON object with a 'careers' array.
-            """,
+            description="Match user profile to suitable careers",
             agent=career_matcher,
-            expected_output="A JSON object containing top 5 career recommendations with details.",
+            expected_output="JSON list of careers",
             context=[profile_analysis_task]
         )
-        
+
         roadmap_creation_task = Task(
-            description="""For each recommended career, create a detailed learning 
-            roadmap including:
-            1. Required skills to learn
-            2. Recommended courses/resources
-            3. Suggested projects
-            4. Timeline for skill acquisition
-            5. Certifications (if applicable)
-            
-            Format the output as a JSON object with roadmaps for each career.
-            """,
+            description="Create learning roadmaps for recommended careers",
             agent=roadmap_creator,
-            expected_output="A JSON object containing detailed learning roadmaps for each recommended career.",
+            expected_output="JSON roadmaps",
             context=[career_matching_task]
         )
-        
-        # Create and run the crew
+
         crew = Crew(
             agents=[profile_analyzer, career_matcher, roadmap_creator],
             tasks=[profile_analysis_task, career_matching_task, roadmap_creation_task],
-            verbose=True,
+            verbose=False,
             process=Process.sequential
         )
-        
-        # Execute the workflow
+
         result = crew.kickoff()
-        
-        # Extract the output from CrewOutput object
-        # CrewOutput has an 'output' attribute containing the final result
         output_data = result.output if hasattr(result, 'output') else str(result)
-        print(f"\n[DEBUG] Raw output type: {type(output_data)}")
-        print(f"[DEBUG] Raw output (first 500 chars): {str(output_data)[:500]}\n")
-        
-        # Try to parse as JSON if it's a string
+
+        # Try to parse JSON if possible
         if isinstance(output_data, str):
             try:
                 output_data = json.loads(output_data)
-                print(f"[DEBUG] Successfully parsed JSON, type: {type(output_data)}")
-            except json.JSONDecodeError as e:
-                print(f"[DEBUG] JSON parse failed: {e}")
-                # If it's not JSON, keep it as a string
+            except Exception:
                 pass
+
+        normalized = normalize_career_data(output_data)
+
+        # Write to file
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        with open(out_path, 'w', encoding='utf-8') as f:
+            json.dump({'status': 'success', 'result': normalized, 'timestamp': datetime.utcnow().isoformat()}, f)
+    except Exception as e:
+        # On error, write error info so status endpoint can report it
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        with open(out_path, 'w', encoding='utf-8') as f:
+            json.dump({'status': 'error', 'message': str(e), 'timestamp': datetime.utcnow().isoformat()}, f)
+
+@recommend_bp.route('/recommend', methods=['POST'])
+def get_career_recommendations():
+    try:
+        data = request.get_json()
+
+        # Basic validation
+        if not data:
+            return jsonify({'error': 'No input data provided'}), 400
         
-        # Normalize the output to ensure it has the correct structure for frontend
-        print(f"[DEBUG] Before normalize - data type: {type(output_data)}, keys: {list(output_data.keys()) if isinstance(output_data, dict) else 'N/A'}")
-        output_data = normalize_career_data(output_data)
-        print(f"[DEBUG] After normalize - career_roadmaps count: {len(output_data.get('career_roadmaps', []))}")
-        
-        # Process and return the result
-        return jsonify({
-            'status': 'success',
-            'result': output_data,
-            'timestamp': datetime.utcnow().isoformat()
-        })
+        # Launch the heavy LLM workflow in a background process and return a job ID
+        job_id = str(uuid.uuid4())
+        out_dir = os.path.join(tempfile.gettempdir(), 'career_helper_jobs')
+        out_path = os.path.join(out_dir, f"{job_id}.json")
+
+        # Spawn process to run crew and write result
+        p = MPProcess(target=_run_crew_and_write_output, args=(data, out_path))
+        p.daemon = True
+        p.start()
+
+        status_url = url_for('recommend.get_recommendation_status', job_id=job_id, _external=False)
+        return jsonify({'status': 'accepted', 'job_id': job_id, 'status_url': status_url}), 202
         
     except Exception as e:
         print(f"Error in get_career_recommendations: {str(e)}")
@@ -256,3 +238,18 @@ def normalize_career_data(data):
     # Fallback: wrap the entire data
     print(f"[NORMALIZE] Fallback: wrapping entire data")
     return {'career_roadmaps': [data] if isinstance(data, dict) else []}
+
+
+@recommend_bp.route('/recommend/status/<job_id>', methods=['GET'])
+def get_recommendation_status(job_id):
+    out_dir = os.path.join(tempfile.gettempdir(), 'career_helper_jobs')
+    out_path = os.path.join(out_dir, f"{job_id}.json")
+    if os.path.exists(out_path):
+        try:
+            with open(out_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return jsonify(data)
+        except Exception as e:
+            return jsonify({'status': 'error', 'message': f'Failed reading result: {e}'}), 500
+    else:
+        return jsonify({'status': 'pending'}), 202
