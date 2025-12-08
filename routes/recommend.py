@@ -142,14 +142,23 @@ def get_career_recommendations():
         # Extract the output from CrewOutput object
         # CrewOutput has an 'output' attribute containing the final result
         output_data = result.output if hasattr(result, 'output') else str(result)
+        print(f"\n[DEBUG] Raw output type: {type(output_data)}")
+        print(f"[DEBUG] Raw output (first 500 chars): {str(output_data)[:500]}\n")
         
         # Try to parse as JSON if it's a string
         if isinstance(output_data, str):
             try:
                 output_data = json.loads(output_data)
-            except json.JSONDecodeError:
+                print(f"[DEBUG] Successfully parsed JSON, type: {type(output_data)}")
+            except json.JSONDecodeError as e:
+                print(f"[DEBUG] JSON parse failed: {e}")
                 # If it's not JSON, keep it as a string
                 pass
+        
+        # Normalize the output to ensure it has the correct structure for frontend
+        print(f"[DEBUG] Before normalize - data type: {type(output_data)}, keys: {list(output_data.keys()) if isinstance(output_data, dict) else 'N/A'}")
+        output_data = normalize_career_data(output_data)
+        print(f"[DEBUG] After normalize - career_roadmaps count: {len(output_data.get('career_roadmaps', []))}")
         
         # Process and return the result
         return jsonify({
@@ -165,3 +174,85 @@ def get_career_recommendations():
             'message': str(e),
             'timestamp': datetime.utcnow().isoformat()
         }), 500
+
+def normalize_career_data(data):
+    """
+    Normalize career data into a standardized structure.
+    Handles various agent output formats and converts to career_roadmaps array.
+    """
+    print(f"[NORMALIZE] Input type: {type(data)}")
+    
+    if not data:
+        print(f"[NORMALIZE] Data is empty/None")
+        return {'career_roadmaps': []}
+    
+    # If it's a string, try to parse it first
+    if isinstance(data, str):
+        print(f"[NORMALIZE] Input is string (len: {len(data)})")
+        # Try to extract JSON from string if wrapped in explanation text
+        try:
+            # Look for JSON-like content
+            import re
+            json_match = re.search(r'\{.*\}', data, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
+                parsed = json.loads(json_str)
+                print(f"[NORMALIZE] Extracted JSON from string")
+                return normalize_career_data(parsed)
+        except:
+            pass
+        print(f"[NORMALIZE] Could not extract JSON from string, returning empty")
+        return {'career_roadmaps': []}
+    
+    # If it's already in the correct format
+    if isinstance(data, dict) and 'career_roadmaps' in data:
+        if isinstance(data['career_roadmaps'], list):
+            print(f"[NORMALIZE] Already has career_roadmaps ({len(data['career_roadmaps'])} items)")
+            return data
+    
+    # If it's an array of careers
+    if isinstance(data, list):
+        print(f"[NORMALIZE] Is array ({len(data)} items)")
+        return {'career_roadmaps': data}
+    
+    # If it's a dict, examine its structure
+    if isinstance(data, dict):
+        print(f"[NORMALIZE] Is dict with keys: {list(data.keys())}")
+        
+        # If it's a dict with 'careers' key
+        if 'careers' in data:
+            careers = data['careers']
+            if isinstance(careers, list):
+                print(f"[NORMALIZE] Found 'careers' key ({len(careers)} items)")
+                return {'career_roadmaps': careers}
+        
+        # If it's a dict with 'roadmap' key
+        if 'roadmap' in data:
+            roadmap = data['roadmap']
+            if isinstance(roadmap, list):
+                print(f"[NORMALIZE] Found 'roadmap' array ({len(roadmap)} items)")
+                return {'career_roadmaps': roadmap}
+            elif isinstance(roadmap, dict):
+                print(f"[NORMALIZE] Found 'roadmap' dict")
+                return {'career_roadmaps': [roadmap]}
+        
+        # If it looks like a single career object
+        if 'career_title' in data or 'title' in data:
+            print(f"[NORMALIZE] Looks like single career object")
+            return {'career_roadmaps': [data]}
+        
+        # If it has 'roadmaps' (plural)
+        if 'roadmaps' in data and isinstance(data['roadmaps'], list):
+            print(f"[NORMALIZE] Found 'roadmaps' array ({len(data['roadmaps'])} items)")
+            return {'career_roadmaps': data['roadmaps']}
+        
+        # Look for any array values that might be careers
+        for key, value in data.items():
+            if isinstance(value, list) and len(value) > 0:
+                print(f"[NORMALIZE] Found potential careers array in key '{key}' ({len(value)} items)")
+                if isinstance(value[0], dict):
+                    return {'career_roadmaps': value}
+    
+    # Fallback: wrap the entire data
+    print(f"[NORMALIZE] Fallback: wrapping entire data")
+    return {'career_roadmaps': [data] if isinstance(data, dict) else []}
