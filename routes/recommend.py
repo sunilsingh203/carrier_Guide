@@ -171,18 +171,70 @@ def normalize_career_data(data):
     # If it's a string, try to parse it first
     if isinstance(data, str):
         print(f"[NORMALIZE] Input is string (len: {len(data)})")
-        # Try to extract JSON from string if wrapped in explanation text
+        # Try several strategies to extract JSON from wrapped text:
+        # 1) fenced code blocks with ```json or ```
+        # 2) balanced {...} or [...] substring extraction that respects string quotes
         try:
-            # Look for JSON-like content
             import re
-            json_match = re.search(r'\{.*\}', data, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(0)
-                parsed = json.loads(json_str)
-                print(f"[NORMALIZE] Extracted JSON from string")
-                return normalize_career_data(parsed)
-        except:
-            pass
+
+            # Strategy A: fenced JSON blocks ```json ... ``` or ``` ... ```
+            fenced_json = re.search(r'```\s*json\s*([\s\S]*?)```', data, re.IGNORECASE)
+            if not fenced_json:
+                fenced_json = re.search(r'```([\s\S]*?)```', data)
+            if fenced_json:
+                candidate = fenced_json.group(1).strip()
+                try:
+                    parsed = json.loads(candidate)
+                    print(f"[NORMALIZE] Extracted JSON from fenced code block")
+                    return normalize_career_data(parsed)
+                except Exception as e:
+                    print(f"[NORMALIZE] Fenced JSON parse failed: {e}")
+
+            # Strategy B: find the first balanced JSON object or array substring
+            def find_balanced(text, open_ch, close_ch):
+                start = text.find(open_ch)
+                if start == -1:
+                    return None
+                depth = 0
+                in_str = False
+                esc = False
+                for i in range(start, len(text)):
+                    ch = text[i]
+                    if esc:
+                        esc = False
+                        continue
+                    if ch == '\\':
+                        esc = True
+                        continue
+                    if ch == '"':
+                        in_str = not in_str
+                        continue
+                    if in_str:
+                        continue
+                    if ch == open_ch:
+                        depth += 1
+                    elif ch == close_ch:
+                        depth -= 1
+                        if depth == 0:
+                            return text[start:i+1]
+                return None
+
+            # Try object then array
+            obj_candidate = find_balanced(data, '{', '}')
+            arr_candidate = find_balanced(data, '[', ']')
+
+            # Prefer object candidate if it exists and parses
+            for candidate in (obj_candidate, arr_candidate):
+                if candidate:
+                    try:
+                        parsed = json.loads(candidate)
+                        print(f"[NORMALIZE] Extracted JSON by balanced-scan")
+                        return normalize_career_data(parsed)
+                    except Exception as e:
+                        print(f"[NORMALIZE] Balanced-scan parse failed: {e}")
+        except Exception as e:
+            print(f"[NORMALIZE] Exception while extracting JSON from string: {e}")
+
         print(f"[NORMALIZE] Could not extract JSON from string, returning empty")
         return {'career_roadmaps': []}
     
