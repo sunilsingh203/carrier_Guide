@@ -185,7 +185,7 @@ def normalize_career_data(data):
                 candidate = fenced_json.group(1).strip()
                 try:
                     parsed = json.loads(candidate)
-                    print(f"[NORMALIZE] Extracted JSON from fenced code block")
+                    print(f"[NORMALIZE] Extracted JSON from fenced code block, type: {type(parsed)}, keys/len: {list(parsed.keys()) if isinstance(parsed, dict) else len(parsed) if isinstance(parsed, list) else 'scalar'}")
                     return normalize_career_data(parsed)
                 except Exception as e:
                     print(f"[NORMALIZE] Fenced JSON parse failed: {e}")
@@ -228,7 +228,7 @@ def normalize_career_data(data):
                 if candidate:
                     try:
                         parsed = json.loads(candidate)
-                        print(f"[NORMALIZE] Extracted JSON by balanced-scan")
+                        print(f"[NORMALIZE] Extracted JSON by balanced-scan, type: {type(parsed)}, keys/len: {list(parsed.keys()) if isinstance(parsed, dict) else len(parsed) if isinstance(parsed, list) else 'scalar'}")
                         return normalize_career_data(parsed)
                     except Exception as e:
                         print(f"[NORMALIZE] Balanced-scan parse failed: {e}")
@@ -241,7 +241,7 @@ def normalize_career_data(data):
     # If it's already in the correct format
     if isinstance(data, dict) and 'career_roadmaps' in data:
         if isinstance(data['career_roadmaps'], list):
-            print(f"[NORMALIZE] Already has career_roadmaps ({len(data['career_roadmaps'])} items)")
+            print(f"[NORMALIZE] Already has career_roadmaps ({len(data['career_roadmaps'])} items), first keys: {list(data['career_roadmaps'][0].keys()) if data['career_roadmaps'] and isinstance(data['career_roadmaps'][0], dict) else 'N/A'}")
             return data
     
     # If it's an array of careers
