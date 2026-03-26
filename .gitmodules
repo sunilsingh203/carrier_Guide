@@ -1,3 +1,4 @@
 [submodule "nnProject"]
 	path = nnProject
 	url = https://github.com/sunilsingh203/nn-PRoject.git
+	branch = main
